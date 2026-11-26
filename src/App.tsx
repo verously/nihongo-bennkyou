@@ -31,10 +31,17 @@ const STORAGE_MODE = 'kotoba_studio_mode_v1';
 
 const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   enableAiPhotoGen: true,
   enableSearchGrounding: true,
 };
+
+const DEPRECATED_MODELS = new Set([
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash-lite',
+]);
 
 type WorkspacePhase = 'guide' | 'record' | 'feedback';
 
@@ -47,10 +54,16 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 
+function loadSettings(): AppSettings {
+  const saved = loadJson<AppSettings>(STORAGE_SETTINGS, DEFAULT_SETTINGS);
+  if (!saved.model || DEPRECATED_MODELS.has(saved.model)) {
+    return { ...DEFAULT_SETTINGS, ...saved, model: 'gemini-3.8-flash' };
+  }
+  return { ...DEFAULT_SETTINGS, ...saved };
+}
+
 export function App() {
-  const [settings, setSettings] = useState<AppSettings>(() =>
-    loadJson<AppSettings>(STORAGE_SETTINGS, DEFAULT_SETTINGS)
-  );
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [showFurigana, setShowFurigana] = useState<boolean>(() =>
     loadJson<boolean>(STORAGE_FURIGANA, true)
   );

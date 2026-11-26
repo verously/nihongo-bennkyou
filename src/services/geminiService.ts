@@ -82,8 +82,9 @@ async function callGemini(
   });
 
   if (!res.ok) {
-    // If Google Search grounding caused a 400 on an unsupported model, retry once without tools
-    if (allowSearchFallback && payload.tools && res.status === 400) {
+    // If Google Search grounding is unsupported or restricted on free tier (400/403/429),
+    // gracefully retry once without tools so speech coaching still succeeds cleanly.
+    if (allowSearchFallback && payload.tools && [400, 403, 429].includes(res.status)) {
       const { tools: _unused, ...withoutTools } = payload;
       return callGemini(apiKey, model, withoutTools, false);
     }
@@ -100,10 +101,56 @@ async function callGemini(
   return res.json();
 }
 
+export interface GeminiModelOption {
+  id: string;
+  label: string;
+}
+
+export const RECOMMENDED_MODELS: GeminiModelOption[] = [
+  { id: 'gemini-3.8-flash', label: 'gemini-3.8-flash（おすすめ・最新・音声対応）' },
+  { id: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite（高速・軽量）' },
+  { id: 'gemini-3.6-flash', label: 'gemini-3.6-flash（バランス型）' },
+  { id: 'gemini-3.5-flash', label: 'gemini-3.5-flash（安定版）' },
+  { id: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview（高精度な添削向け）' },
+];
+
+export async function fetchAvailableGeminiModels(apiKey: string): Promise<GeminiModelOption[]> {
+  if (!apiKey.trim()) return RECOMMENDED_MODELS;
+  const url = `${GEMINI_BASE}?key=${encodeURIComponent(apiKey.trim())}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`モデル一覧の取得に失敗しました (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  const list = Array.isArray(data?.models) ? data.models : [];
+  const usable = list
+    .filter((m: any) => {
+      const name = String(m?.name || '');
+      const methods: string[] = m?.supportedGenerationMethods || [];
+      return (
+        methods.includes('generateContent') &&
+        name.includes('gemini-') &&
+        !name.includes('embedding') &&
+        !name.includes('image') &&
+        !name.includes('tts') &&
+        !name.includes('transcribe') &&
+        !name.includes('gemini-2.0') &&
+        !name.includes('gemini-2.5')
+      );
+    })
+    .map((m: any) => {
+      const id = String(m.name).replace(/^models\//, '');
+      const display = m.displayName ? `${id}（${m.displayName}）` : id;
+      return { id, label: display };
+    });
+
+  return usable.length > 0 ? usable : RECOMMENDED_MODELS;
+}
+
 export async function testGeminiConnection(
   apiKey: string,
   model: string
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string; suggestedModel?: string }> {
   if (!apiKey.trim()) {
     return { ok: false, message: 'APIキーを入力してください。' };
   }
@@ -128,9 +175,13 @@ export async function testGeminiConnection(
       message: `接続に成功しました（モデル: ${model} / 応答: ${text.trim() || 'OK'}）`,
     };
   } catch (err: any) {
+    const msg = err?.message || '接続テストに失敗しました。';
+    const match = msg.match(/models\/(gemini-[a-z0-9.\-]+)/i);
+    const suggested = match && match[1] !== model ? match[1] : undefined;
     return {
       ok: false,
-      message: err?.message || '接続テストに失敗しました。',
+      message: msg,
+      suggestedModel: suggested,
     };
   }
 }
@@ -139,7 +190,11 @@ async function tryGenerateImageWithGemini(
   apiKey: string,
   imagePrompt: string
 ): Promise<string | undefined> {
-  const imageModels = ['gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation'];
+  const imageModels = [
+    'gemini-3.1-flash-lite-image',
+    'gemini-3.1-flash-image',
+    'gemini-3-pro-image',
+  ];
   for (const model of imageModels) {
     try {
       const url = `${GEMINI_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
